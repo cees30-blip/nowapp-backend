@@ -4,40 +4,38 @@ import time
 
 app = Flask(__name__)
 
-# Deine Koordinaten (Beispiel für Mitteldeutschland, pass sie ggf. an!)
+# Deine Koordinaten (Beispiel für Mitteldeutschland)
 LAT = "51.1"
 LON = "10.4"
 
 @app.route('/nowcast', methods=['GET'])
 def get_nowcast():
     try:
-        # Bright Sky API Abfrage (Aktuelle Wetterdaten)
+        # Bright Sky API Abfrage
         url = f"https://api.brightsky.dev/current_weather?lat={LAT}&lon={LON}"
         r = requests.get(url, timeout=10)
         data = r.json()
         
         weather = data.get("weather", {})
         
-        # Windrichtung (direction) ist woher der Wind kommt.
-        # Für den Pfeil (wohin er zieht) müssen wir +180 Grad rechnen.
+        # Windrichtung (wohin der Wind zieht = +180 Grad)
         wind_from = weather.get("wind_direction", 0)
         wind_to = (wind_from + 180) % 360
         
-        # Niederschlag der letzten Stunde (mm)
+        # Niederschlags-Details
         precip = weather.get("precipitation", 0.0)
-        
-        # Status-Text basierend auf Aprilwetter
-        status = "Klarer Himmel"
-        if precip > 0:
-            status = "Niederschlag aktiv"
-        elif weather.get("cloud_cover", 0) > 50:
-            status = "Bewölkt / Schauer"
+        precip_type = weather.get("precipitation_type", "none") # "none", "rain", "snow", "sleet", "hail"
+
+        # Windgeschwindigkeit (km/h)
+        speed = weather.get("wind_speed", 0)
 
         return jsonify({
-            "angle": float(wind_to), # Die Richtung, in die die Zellen ziehen
-            "speed": weather.get("wind_speed", 0),
-            "precip": precip,
-            "status": status,
+            "angle": float(wind_to),
+            "speed": float(speed),
+            "precip": float(precip),
+            "precip_type": precip_type,
+            "cloud_cover": weather.get("cloud_cover", 0),
+            "temperature": weather.get("temperature", 0.0),
             "timestamp": time.time()
         })
     except Exception as e:
