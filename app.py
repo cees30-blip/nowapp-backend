@@ -2,55 +2,53 @@ from flask import Flask, jsonify
 import cv2
 import numpy as np
 import requests
-import time
 
 app = Flask(__name__)
 
-# Deine Koordinaten (Beispiel Hessen/Fronhausen ca. 50.7, 8.7)
-LAT, LON = "50.7", "8.7"
+# Deine exakten Koordinaten (Fronhausen/Lahn)
+LAT, LON = 50.7, 8.7
 
-def get_radar_vector():
-    # 1. Echtes DWD Radarbild holen (Ausschnitt Hessen/NRW)
+def get_local_radar():
+    # Wir ziehen ein sehr kleines, hochauflösendes Bild direkt um dich herum
+    # BBOX: minLat, minLon, maxLat, maxLon
+    bbox = f"{LAT-0.5},{LON-0.5},{LAT+0.5},{LON+0.5}"
     wms_url = "https://maps.dwd.de/geoserver/dwd/wms"
     params = {
         "service": "WMS", "version": "1.3.0", "request": "GetMap",
         "layers": "dwd:Niederschlagsradar", "styles": "",
-        "crs": "EPSG:4326", "bbox": "49.0,7.0,52.0,11.0", # Fokus auf deine Region
-        "width": "256", "height": "256", "format": "image/png"
+        "crs": "EPSG:4326", "bbox": bbox,
+        "width": "128", "height": "128", "format": "image/png"
     }
     try:
         r = requests.get(wms_url, params=params, timeout=10)
         img = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_GRAYSCALE)
-        
-        # 2. Vektor-Analyse (Wohin bewegen sich die Pixel-Massen?)
-        # Wir nutzen Sobel-Operatoren für die Kantenbewegung
-        gx = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
-        gy = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
-        
-        vx, vy = np.mean(gx), np.mean(gy)
-        angle = np.degrees(np.arctan2(vy, vx)) + 90 # Korrektur für Kompass
-        
-        # Wenn kaum Regen da ist, nehmen wir den Wind als Fallback
-        intensity = np.mean(img)
-        return round(angle, 1), round(intensity, 2)
+        # Wie viel "Regen-Pixel" sind im Bild? (0-255)
+        # Wir nehmen das 95-Perzentil, um einzelne starke Zellen zu finden
+        intensity = np.percentile(img, 95) 
+        return float(intensity)
     except:
-        return 135.0, 0.0 # Fallback Südost
+        return 0.0
 
 @app.route('/nowcast')
 def nowcast():
-    angle, intensity = get_radar_vector()
-    # Bright Sky für den Rest
+    radar_val = get_local_radar()
     try:
-        weather = requests.get(f"https://api.brightsky.dev/current_weather?lat={LAT}&lon={LON}").json()["weather"]
+        # Windrichtung für den Zugvektor
+        w = requests.get(f"https://api.brightsky.dev/current_weather?lat={LAT}&lon={LON}").json()["weather"]
+        
+        # Wind kommt VON Nord-West (315°), zieht also NACH Süd-Ost (135°)
+        wind_from = w["wind_direction"]
+        wind_to = (wind_from + 180) % 360
+        
         return jsonify({
-            "angle": angle, 
-            "speed": weather["wind_speed"] if weather["wind_speed"] > 5 else 15,
-            "temp": weather["temperature"],
-            "precip": intensity, # Echte Radar-Intensität!
-            "type": weather["precipitation_type"]
+            "angle": float(wind_to),
+            "speed": float(w["wind_speed"]),
+            "precip": radar_val, # Echter Radar-Wert
+            "temp": float(w["temperature"]),
+            "type": str(w["precipitation_type"])
         })
     except:
-        return jsonify({"angle": angle, "speed": 15, "temp": 0, "precip": intensity, "type": "none"})
+        return jsonify({"angle": 135.0, "speed": 20.0, "precip": radar_val, "temp": 0.0, "type": "none"})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
