@@ -8,7 +8,7 @@ app = Flask(__name__)
 LAT, LON = 50.7, 8.7
 
 def get_radar_contours():
-    bbox = f"{LAT-0.2},{LON-0.2},{LAT+0.2},{LON+0.2}"
+    bbox = f"{LAT-0.3},{LON-0.3},{LAT+0.3},{LON+0.3}"
     wms_url = "https://maps.dwd.de/geoserver/dwd/wms"
     params = {
         "service": "WMS", "version": "1.3.0", "request": "GetMap",
@@ -66,8 +66,6 @@ def nowcast():
         w_req = requests.get(f"https://api.brightsky.dev/current_weather?lat={LAT}&lon={LON}", timeout=5).json()
         w = w_req["weather"]
         angle = (w["wind_direction"] + 180) % 360
-        
-        # FIX: Wir holen hier jetzt die echten Wolken-Prozente vom Satelliten
         clouds = float(w.get("cloud_cover", 0))
         
         return jsonify({
