@@ -1,12 +1,3 @@
-from flask import Flask, jsonify
-import cv2
-import numpy as np
-import requests
-
-app = Flask(__name__)
-
-LAT, LON = 50.7, 8.7
-
 def get_radar_contours():
     bbox = f"{LAT-0.2},{LON-0.2},{LAT+0.2},{LON+0.2}"
     wms_url = "https://maps.dwd.de/geoserver/dwd/wms"
@@ -15,29 +6,42 @@ def get_radar_contours():
         "layers": "dwd:Niederschlagsradar", "styles": "",
         "crs": "EPSG:4326", "bbox": bbox,
         "width": "200", "height": "200", "format": "image/png",
-        "transparent": "true" # <-- DER ENTSCHEIDENDE FIX: Keine Hintergrundkarte mehr!
+        "transparent": "true"
     }
     
     try:
         r = requests.get(wms_url, params=params, timeout=10)
-        # IMREAD_UNCHANGED behält den Alpha-Kanal (Transparenz) bei
-        img = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_UNCHANGED)
-        
-        # Sicherheitscheck: Hat das Bild einen Alpha-Kanal (ist es transparent)?
-        if img is not None and len(img.shape) == 3 and img.shape[2] == 4:
-            alpha_channel = img[:, :, 3] # Transparenz-Schicht
-            gray = cv2.cvtColor(img, cv2.COLOR_BGRA2GRAY)
-            # Zwinge alle transparenten (leeren) Pixel hart auf Schwarz (0)
-            gray[alpha_channel == 0] = 0
-        else:
-            gray = np.zeros((200, 200), dtype=np.uint8)
+        # Bild in Farbe laden (BGR Format in OpenCV)
+        img = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
+        if img is None: return []
 
-        polygons = []
-        levels = [(15, "gray"), (50, "orange"), (100, "red")]
+        # In den HSV-Farbraum wechseln (Hue, Saturation, Value)
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        hue = hsv[:, :, 0]
+        sat = hsv[:, :, 1]
         
-        for thresh_val, color in levels:
-            _, thresh = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # FILTER 1: Der "Geister-Killer"
+        # Alles was grau, schwarz oder weiß ist (Kartenränder, Text), fliegt raus!
+        # Echter Regen hat eine Farbsättigung über 40.
+        rain_mask = sat > 40
+        
+        # FILTER 2: Radar-Farben erkennen (OpenCV Hue geht von 0-179)
+        # Rot, Violett, Magenta (Starkregen/Hagel): ~0-10 und ~140-179
+        mask_red = ((hue <= 10) | (hue >= 140)) & rain_mask
+        
+        # Gelb und Orange (Mittelstark): ~11-35
+        mask_orange = ((hue > 10) & (hue <= 35)) & rain_mask
+        
+        # Grün, Cyan, Blau (Leicht): ~36-139
+        mask_gray = ((hue > 35) & (hue < 140)) & rain_mask
+        
+        polygons = []
+        levels = [(mask_gray, "gray"), (mask_orange, "orange"), (mask_red, "red")]
+        
+        for mask, color in levels:
+            # Maske für OpenCV in ein sauberes Schwarz/Weiß Bild (0/255) umwandeln
+            mask_uint8 = np.where(mask, 255, 0).astype(np.uint8)
+            contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             for cnt in contours:
                 epsilon = 0.05 * cv2.arcLength(cnt, True)
@@ -57,23 +61,3 @@ def get_radar_contours():
     except Exception as e:
         print(f"Radar Error: {e}")
         return []
-
-@app.route('/nowcast')
-def nowcast():
-    polygons = get_radar_contours()
-    try:
-        w_req = requests.get(f"https://api.brightsky.dev/current_weather?lat={LAT}&lon={LON}", timeout=5).json()
-        w = w_req["weather"]
-        angle = (w["wind_direction"] + 180) % 360
-        return jsonify({
-            "angle": float(angle),
-            "speed": float(w["wind_speed"]),
-            "temp": float(w["temperature"]),
-            "type": str(w["precipitation_type"]),
-            "poly": polygons
-        })
-    except:
-        return jsonify({"angle": 135.0, "speed": 0.0, "temp": 0.0, "type": "none", "poly": polygons})
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
